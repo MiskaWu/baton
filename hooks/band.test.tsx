@@ -1,5 +1,8 @@
 import type { On, RenderPropsOf } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
+
+import { treeRows } from './stack'
 
 const PLUGIN = 'baton'
 
@@ -271,5 +274,206 @@ test('✕ 與 /band clear 都讓整塊消失', async ($, on) => {
   await $.command.run({ ...RUN_CONTEXT, command: 'band', args: 'clear' })
   const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'AbovePrompt', props: PROPS })
   expect(await ui.find({ key: 'dismiss' })).toBeUndefined()
+  await ui.unmount()
+})
+
+// ── 和別的 mod 共用輸入框上方 ──────────────────────────────────────────────
+//
+// 上面的測試底下只有 bottom() 那個空的 <Box />：帶子永遠只有 baton 自己，所以 10-22 那兩件事都抓不到——
+// baton 有卡片時不叫 next，下層畫什麼都被蓋掉；而卡片全是 /band 放的，Claude 的回覆走的 session.append 沒測過。
+// 下面用行內外掛站在 baton 的下層（append）與外層（prepend），回覆一律走 session.append。
+
+/** 裝在 baton 之後、鏈上在它下層的 mod：四列的提示列（三行字＋一顆按鈕）。 */
+const NEIGHBOUR = {
+  name: 'neighbour',
+  tier: 'append' as const,
+  register(on: On) {
+    on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+      const { Box, Button, Text } = $.ui.resolve(e)
+
+      return (
+        <Box flexDirection="column">
+          <Text>{`鄰居的提示（給我 ${e.props.maxRows} 列）`}</Text>
+          <Text>第二行</Text>
+          <Text>第三行</Text>
+          <Button key="neighbour-ok" label="知道了" onPress={() => undefined} />
+        </Box>
+      )
+    })
+  },
+}
+
+/** 裝在 baton 之前、鏈上在它外層，照 README 約定寫的 mod：三列疊在上面，往下傳的 maxRows 扣掉三列。 */
+const OUTER = {
+  name: 'outer',
+  tier: 'prepend' as const,
+  register(on: On) {
+    on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+      if (e.props.hasSurvey) {
+        return next(e)
+      }
+      const { Box, Text } = $.ui.resolve(e)
+      const below = await next({ ...e, props: { ...e.props, maxRows: Math.max(0, e.props.maxRows - 3) } })
+
+      return (
+        <Box flexDirection="column">
+          <Text>外層的提示</Text>
+          <Text>第二行</Text>
+          <Text>第三行</Text>
+          {below}
+        </Box>
+      )
+    })
+  },
+}
+
+/** 整棵樹畫出來的字（含按鈕 label 與圖的 alt）：別的 mod 畫的元素 find 找不到，從樹上讀。 */
+function texts(node: unknown): string {
+  if (typeof node === 'string') {
+    return node
+  }
+  if (Array.isArray(node)) {
+    return node.map(texts).join('\n')
+  }
+  if (typeof node !== 'object' || node === null) {
+    return ''
+  }
+  const { props, children } = node as { props?: { label?: unknown; alt?: unknown }; children?: unknown }
+
+  return [props?.label, props?.alt, texts(children)].filter(part => typeof part === 'string' && part !== '').join('\n')
+}
+
+let rowSeq = 0
+
+/** Claude 的一則回覆進轉錄：和真的對話一樣走 session.append。agentId 有值就是子代理的回覆。 */
+async function reply($: Engine, text: string, agentId?: string): Promise<void> {
+  rowSeq += 1
+  await $.session.append({
+    message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text }] },
+    door: 'response',
+    origin: { kind: 'model', model: 'claude-test' },
+    uuid: `row-${rowSeq}`,
+    ...(agentId === undefined ? {} : { agentId }),
+  })
+}
+
+const fence = (command: string, reason = '要你跑') => `\`\`\`bash\n# 原因：${reason}\n${command}\n\`\`\``
+
+// 七行的指令：一張卡就比半條帶子高，三張一定放不下、要開視窗
+const TALL = 'x\n'.repeat(6) + 'done'
+
+test('下層的 mod 有自己的提示列時：baton 疊在它上面，兩邊都畫得出來、按得到', { plugins: [NEIGHBOUR] }, async ($, on) => {
+  bottom(on)
+  await reply($, fence('git push origin feat-login'))
+
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'AbovePrompt', props: PROPS })
+    const drawn = texts(await ui.drawn())
+
+    expect(await ui.find({ key: 'dismiss' })).toBeDefined()
+    expect(await shows(ui, /git push origin feat-login/)).toBe(true)
+    expect(drawn).toContain('鄰居的提示')
+    expect(await ui.press({ key: 'neighbour-ok', plugin: 'neighbour' })).toBeDefined()
+    // baton 的帶子在上、鄰居的在下（同 ue-agent：自己的在上，next(e) 的在下）
+    expect(drawn.indexOf('git push origin feat-login')).toBeLessThan(drawn.indexOf('鄰居的提示'))
+    // 往下傳的列數扣掉了 baton 至少要的頁首＋一張卡
+    expect(drawn).toContain(`給我 ${PROPS.maxRows - 4} 列`)
+    await ui.unmount()
+  }
+})
+
+test('外層的 mod 照約定疊加時：baton 照剩下的列數排，整條帶子不超過視窗（只多 baton 自己墊的一列）', { plugins: [OUTER] }, async ($, on) => {
+  bottom(on)
+  await reply($, [fence(`${TALL} 1`), fence(`${TALL} 2`), fence('ls')].join('\n\n'))
+
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'AbovePrompt', props: PROPS })
+  const tree = await ui.drawn()
+
+  expect(texts(tree)).toContain('外層的提示')
+  expect(await shows(ui, /第 3 筆指令：ls/)).toBe(true)
+  expect(treeRows(tree, PROPS.bodyColumns)).toBeLessThanOrEqual(PROPS.maxRows + 1)
+  await ui.unmount()
+})
+
+test('問卷佔著帶子時讓路：畫引擎（下層）的，baton 不畫', async ($, on) => {
+  on('ui.render', ($, e) => {
+    const { Box, Text } = $.ui.resolve(e)
+
+    return (
+      <Box>
+        <Text>問卷</Text>
+      </Box>
+    )
+  })
+  on('ui.toast', () => ({ value: undefined }))
+  mock.clock(on, { now: 1_700_000_000_000 })
+  await reply($, fence('make gen'))
+
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'AbovePrompt', props: { ...PROPS, hasSurvey: true } })
+    expect(await ui.find({ key: 'dismiss' })).toBeUndefined()
+    expect(texts(await ui.drawn())).toContain('問卷')
+    await ui.unmount()
+  }
+})
+
+for (const [where, plugins] of [
+  ['只有 baton', []],
+  ['下層有別的 mod', [NEIGHBOUR]],
+  ['外層有別的 mod', [OUTER]],
+] as const) {
+  test(`新收的指令一定在視窗裡，就算你捲到別張了（${where}）`, { plugins }, async ($, on) => {
+    bottom(on)
+    await reply($, [fence(`${TALL} 1`), fence(`${TALL} 2`), fence(`${TALL} 3`)].join('\n\n'))
+
+    const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'AbovePrompt', props: PROPS })
+    expect(await shows(ui, /第 3 筆指令：x/)).toBe(true)
+
+    // 捲到最上面那張，新的回覆進來
+    while ((await button(ui, /上面/)) !== undefined) {
+      await ui.press({ key: 'window-up' })
+    }
+    expect(await shows(ui, /第 1 筆指令/)).toBe(true)
+    await reply($, `好了，再跑這個：\n\n${fence('git push origin main', '從 worktree 推會被擋')}`)
+
+    // 只留最後三筆：最舊的被擠掉，新的那張在第 3 筆、而且在視窗裡
+    expect(await shows(ui, /第 3 筆指令：git push origin main/)).toBe(true)
+    expect(await shows(ui, /done 1/)).toBe(false)
+    await ui.unmount()
+  })
+}
+
+test('和別人共用帶子時滾輪交給引擎捲整條；只有 baton 時才攔下來換張', { plugins: [NEIGHBOUR] }, async ($, on) => {
+  const scrolled: number[] = []
+  bottom(on)
+  on('ui.scroll', ($, e) => {
+    scrolled.push(e.by)
+
+    return {}
+  })
+  await reply($, [fence(`${TALL} 1`), fence(`${TALL} 2`), fence('ls')].join('\n\n'))
+
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'AbovePrompt', props: PROPS, requestId: 'band' })
+  expect(await button(ui, /上面/)).toBeDefined()
+  await $.ui.scroll({ component: 'AbovePrompt', requestId: 'band', offset: 1, by: 1, bodyRows: 12, contentRows: 14, origin: { kind: 'person' } })
+  expect(scrolled).toEqual([1])
+  await ui.unmount()
+})
+
+test('只有 baton、卡片放不下時：滾輪一格換一張，不讓引擎捲', async ($, on) => {
+  const scrolled: number[] = []
+  bottom(on)
+  on('ui.scroll', ($, e) => {
+    scrolled.push(e.by)
+
+    return {}
+  })
+  await reply($, [fence(`${TALL} 1`), fence(`${TALL} 2`), fence('ls')].join('\n\n'))
+
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'AbovePrompt', props: PROPS, requestId: 'band' })
+  expect(await shows(ui, /第 3 筆指令：ls/)).toBe(true)
+  await $.ui.scroll({ component: 'AbovePrompt', requestId: 'band', offset: 0, by: -1, bodyRows: 12, contentRows: 13, origin: { kind: 'person' } })
+  expect(scrolled).toEqual([])
+  expect(await shows(ui, /第 2 筆指令/)).toBe(true)
   await ui.unmount()
 })

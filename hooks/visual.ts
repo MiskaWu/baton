@@ -55,7 +55,7 @@ function esc(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
 }
 
-const wide = (ch: string) => /[ᄀ-ᅟ⺀-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]/.test(ch)
+export const wide = (ch: string) => /[ᄀ-ᅟ⺀-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]/.test(ch)
 
 /** 估計的字寬（px）：中日韓一個字級寬；mono 每個半形 0.6 個字級。SVG 不會量字，靠它截斷與斷行。 */
 export function textWidth(s: string, size: number, mono = false): number {

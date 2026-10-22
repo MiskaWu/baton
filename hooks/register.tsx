@@ -5,6 +5,7 @@ import type {
   ProcessSpawnChunk,
   ProcessSpawnResult,
   Register,
+  RenderElement,
   RenderSurface,
 } from 'claude-code'
 
@@ -28,6 +29,7 @@ import {
 } from './commands'
 import type { RunOutcome } from './commands'
 import { redact } from './redact'
+import { BAND_MIN_ROWS, treeRows } from './stack'
 import { COL, TOOLBAR_ROW, bandHeader, cardRows, commandCard, lastFirst, runnable, windowFor, windowFrom } from './visual'
 
 /**
@@ -306,18 +308,36 @@ export const register: Register = on => {
     return {}
   })
 
-  // 畫帶子。沒有待執行的指令就讓路，什麼都不顯示。
+  // 畫帶子。沒有待執行的指令、或問卷佔著帶子，就讓路。
+  //
+  // 這一塊是所有 mod 共用的（stack.ts 開頭）：有卡片時也不獨佔，先讓下層畫——往下傳的 maxRows
+  // 扣掉 baton 至少要的列數——再把帶子疊在下層畫的上面，視窗只用剩下的列。
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const list = await read($, pending)
 
-    if (list.length === 0) {
+    if (list.length === 0 || e.props.hasSurvey) {
       drawn = null
 
       return next(e)
     }
 
+    const below = await next({ ...e, props: { ...e.props, maxRows: Math.max(0, e.props.maxRows - BAND_MIN_ROWS) } })
+    // 下層沒畫東西（引擎的空位、空的 Box）就當帶子只有 baton，照原本的畫法
+    const belowRows = treeRows(below, e.props.bodyColumns)
+    const isShared = belowRows > 0
+    const room = e.props.maxRows - belowRows
+
     const table = $.ui.resolve(e)
     const { Box, Button, Text } = table
+    const stacked = (band: RenderElement): RenderElement =>
+      isShared ? (
+        <Box flexDirection="column">
+          {band}
+          {below}
+        </Box>
+      ) : (
+        band
+      )
     // 終端機沒有 Svg：元件表裡有也不能畫，畫下去整棵樹被拒、引擎改畫它自己的，而且不報錯
     const Svg = e.surface !== 'terminal' && 'Svg' in table ? table.Svg : undefined
 
@@ -326,7 +346,7 @@ export const register: Register = on => {
       const total = list.length
 
       // 終端機照舊用文字：全部展開（終端機的帶子超出時引擎自己會捲），每筆多一行原因。
-      return (
+      return stacked(
         <Box flexDirection="column" borderStyle="round" borderColor="bashBorder" paddingX={2}>
           <Box flexDirection="row" gap={2}>
             <Text bold color="bashBorder">
@@ -390,7 +410,7 @@ export const register: Register = on => {
               </Box>
             )
           })}
-        </Box>
+        </Box>,
       )
     }
 
@@ -399,7 +419,7 @@ export const register: Register = on => {
     const columns = e.props.bodyColumns
     const cardPx = Math.max(320, Math.floor(columns * COL))
     const rows = list.map(command => cardRows(command, cardPx))
-    const budget = Math.max(2, e.props.maxRows - 1)
+    const budget = Math.max(2, room - 1)
     const at = await read($, view)
     const anchor = at.anchor === null ? -1 : list.findIndex(command => command.id === at.anchor)
     const window =
@@ -407,22 +427,25 @@ export const register: Register = on => {
         ? windowFor(rows, budget, anchor < 0 ? list.length - 1 : anchor)
         : windowFrom(rows, budget, Math.min(at.first, lastFirst(rows, budget)))
     const isWindowed = window.above + window.below > 0
-    drawn = isWindowed ? { requestId: e.requestId, first: window.first, maxFirst: lastFirst(rows, budget) } : null
+    // 和別人共用帶子時滾輪交給引擎捲整條：攔下來換張的話，被擠出視窗的下層內容就捲不到了
+    drawn = isWindowed && !isShared ? { requestId: e.requestId, first: window.first, maxFirst: lastFirst(rows, budget) } : null
 
     const hintCols = (window.above > 0 ? 11 : 0) + (window.below > 0 ? 11 : 0)
     const queued = (await read($, reports)).length
     const header = bandHeader(list, Math.max(160, Math.floor((columns - 4 - hintCols) * COL)), queued)
     const shownRows = 1 + rows.slice(window.first, window.last + 1).reduce((sum, r) => sum + r, 0)
-    // 卡片放不下時多畫幾列，讓內容比視窗高一列：引擎才會把滾輪事件送來，ui.scroll 再攔下來換張。
-    // 這幾列不留白，放被藏起來的卡的一行預覽（按了就換到那張）；最後一列在視窗外，看不到，留空。
-    const filler = isWindowed ? Math.max(0, e.props.maxRows + 1 - shownRows) : 0
+    // 卡片放不下時，視窗裡卡片下面空著的列放被藏起來的卡的一行預覽（按了就換到那張）。
+    // 只有 baton 時再多墊到比視窗高一列：引擎才會把滾輪事件送來，ui.scroll 再攔下來換張；
+    // 最後一列在視窗外，看不到，留空。和別人共用時不墊——墊出來的列會把下層的字擠出視窗。
+    const spare = isWindowed ? Math.max(0, room - shownRows) : 0
     const hidden = list
       .map((command, index) => ({ command, index }))
       .filter(({ index }) => index < window.first || index > window.last)
-    const peeks = hidden.slice(0, Math.max(0, filler - 1))
+    const peeks = hidden.slice(0, spare)
+    const blanks = isWindowed && !isShared ? Math.max(0, room + 1 - shownRows - peeks.length) : 0
     const peekWidth = Math.max(20, columns - 18)
 
-    return (
+    return stacked(
       <Box flexDirection="column">
         <Box flexDirection="row" gap={1}>
           <Box flexDirection="column" flexGrow={1}>
@@ -483,10 +506,10 @@ export const register: Register = on => {
             onPress={() => update($, view, () => ({ first: index, anchor: null }))}
           />
         ))}
-        {Array.from({ length: filler - peeks.length }, (_, k) => (
+        {Array.from({ length: blanks }, (_, k) => (
           <Text key={`filler-${k}`}> </Text>
         ))}
-      </Box>
+      </Box>,
     )
   })
 }

@@ -58,6 +58,7 @@ claude plugin marketplace update baton && claude plugin update baton@baton
 - 放不下時：頁首的「↑ 上面 N 筆／↓ 下面 N 筆」、卡片下方的預覽列，或在帶子上用滾輪換張。
 - `/band <指令>` 手動放一筆進去；`/band clear` 或 ✕ 清空。
 - 桌面 app 畫成卡片；終端機用文字，按鈕一樣。
+- 別的 mod 也在輸入框上方畫東西時，卡片疊在它們上面、一起顯示；問卷出現時先讓路。
 
 ## 安全須知
 
@@ -84,6 +85,32 @@ claude plugin validate .
 
 `hooks/register.tsx` 是進入點；卡片畫法在 `hooks/visual.ts`（純函式，回傳 SVG），金鑰遮蔽在 `hooks/redact.ts`，
 狀態與執行結果的判斷在 `hooks/commands.ts`。每種狀態長什麼樣子集中在 `commands.ts` 的 `STATUS` 表。
+和其他 mod 共用輸入框上方時，估下層佔幾列的純函式在 `hooks/stack.ts`。
+
+### 和其他 mod 共用輸入框上方
+
+輸入框上方那一塊（`AbovePrompt`）所有 mod 共用一個位置，引擎只畫最外層 hook 回的那一棵樹。
+一個 mod 回了自己的樹又不叫 `next(e)`，鏈上在它裡層的 mod（比它晚裝的）和引擎的問卷就整個不見。
+baton 照下面的約定寫，也請其他畫這一塊的 mod 照做：
+
+1. **沒東西要顯示，或 `e.props.hasSurvey` 為真**：`return next(e)`。
+2. **有東西要顯示時疊，不要佔**：先叫 `next`，往下傳的 `maxRows` 扣掉自己要用的列數，再把自己的放在上面。
+
+   ```tsx
+   const below = await next({ ...e, props: { ...e.props, maxRows: Math.max(0, e.props.maxRows - mine) } })
+
+   return (
+     <Box flexDirection="column">
+       {myTree}
+       {below}
+     </Box>
+   )
+   ```
+
+3. **照 `e.props.maxRows` 排版**：裡層看到的是外層扣過的列數，照它排就不會把別人擠出視窗。
+4. **只有帶子上只有自己時才攔 `ui.scroll`**：和別人共用時讓引擎捲整條，別人的內容才捲得到。
+
+baton 自己至少要 4 列（頁首＋一張卡），往下傳時扣掉這 4 列；下層畫回來的佔幾列用 `stack.ts` 估，卡片視窗只用剩下的。
 
 ## 授權
 
