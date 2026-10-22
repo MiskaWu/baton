@@ -51,7 +51,7 @@ claude plugin marketplace update baton && claude plugin update baton@baton
 
 ## 用法
 
-- Claude 回覆裡的 ` ```bash `／` ```sh ` 區塊會自動變成卡片，最多留最近 3 張。
+- Claude 回覆裡的 ` ```bash `／` ```sh ` 區塊會自動變成卡片，最多留最近 3 張。只收主對話的回覆，子代理的不收。
 - 卡片底下那一列：沒跑之前是**原因**，跑的時候是最後一行輸出，跑完是結果（完成、exit N、已停止、要用終端機）。
 - 按鈕：▶ 執行、■ 停止、↻ 再跑一次；⧉ 複製指令（不含原因那一行）。
 - 數字鍵：點一下帶子讓它取得焦點，按 1–9 執行對應的那張。
@@ -73,7 +73,8 @@ claude plugin marketplace update baton && claude plugin update baton@baton
 
 ## 它怎麼跟 Claude 溝通
 
-- baton 在 Claude 的系統提示加一小段規則：bash 區塊第一行寫 `# 原因：…`、一個區塊放一個完整指令、超過 7 行不會有執行鈕、結果會以 `[指令帶子]` 開頭帶回。
+- baton 在 Claude 的系統提示加一小段規則：bash 區塊第一行寫 `# 原因：…`、一個區塊放一個完整指令、超過 7 行不會有執行鈕、
+  只有真的寫進回覆裡的區塊才會變卡片（在 recap 裡說「卡片放上去了」不算）、結果會以 `[指令帶子]` 開頭帶回。
 - 執行結果附在你下一則訊息旁邊交給 Claude（不會插進對話畫面），每筆只帶一次。
 
 ## 開發

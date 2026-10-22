@@ -83,7 +83,12 @@ const stopping = new Set<string>()
 /** 桌面板上一次畫的視窗：滾輪換張要知道現在從第幾張開始、最多捲到哪。 */
 let drawn: { requestId: string; first: number; maxFirst: number } | null = null
 
-/** 加進 Claude 系統提示的寫法規則：原因寫在哪、什麼該放進 bash 區塊、結果怎麼回來。 */
+/**
+ * 加進 Claude 系統提示的寫法規則：原因寫在哪、什麼該放進 bash 區塊、結果怎麼回來。
+ *
+ * 「只有寫進回覆裡的區塊才會變卡片」那條來自 10-22：Claude 在回合結束框的 recap 裡說「兩張卡片已經放上去了」，
+ * 回覆裡卻一個 bash 區塊都沒寫，使用者看到的只有上一輪的舊卡——它說的和真的發生的分岔了。
+ */
 const GUIDE = [
   'Shell commands you hand the user to run (a ```bash fenced block) become cards above the prompt,',
   'via the baton plugin: one press runs the command as the user, outside your permission rules and hooks.',
@@ -91,6 +96,8 @@ const GUIDE = [
   '  than you has to run it: `# 原因：<one short sentence>`. The card shows it; a block without it is flagged.',
   '- Keep each block one self-contained command the user can read in full; blocks over 7 lines get no run button.',
   '- Use bash fences only for commands meant for the user to run; put illustrative snippets in other fences.',
+  '- Only a block written out in your reply\'s own text becomes a card: write it before any tool call that ends',
+  '  your turn. Saying a card is up (in a recap, a tool\'s input or anywhere else) puts none there.',
   '- Each run\'s result comes back beside the user\'s next message, starting with [指令帶子], with secrets masked.',
 ].join('\n')
 
@@ -258,12 +265,13 @@ export const register: Register = on => {
   })
 
   // 收指令：Claude 的回覆進轉錄時，把裡面的 shell 圍欄區塊收進帶子，最新那張自動進視窗。
+  // 只收主對話的：子代理的回覆你在對話裡看不到，它引用的指令收進來只會把真正要你跑的擠掉（只留 MAX_KEPT 筆）。
   //
   // 這是會過路的 hook——轉錄的每一列都經過它，所以整段包在 try 裡：
   // 收指令失敗最多就是帶子少一張卡，絕不能連帶讓那一列進不了轉錄。
   on('session.append', async ($, e, next) => {
     try {
-      if (e.message.type === 'assistant') {
+      if (e.message.type === 'assistant' && e.agentId === undefined) {
         const text = e.message.content
           .map(block => (block.type === 'text' ? block.text : ''))
           .join('\n')

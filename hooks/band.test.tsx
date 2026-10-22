@@ -477,3 +477,14 @@ test('只有 baton、卡片放不下時：滾輪一格換一張，不讓引擎�
   expect(await shows(ui, /第 2 筆指令/)).toBe(true)
   await ui.unmount()
 })
+
+test('子代理回覆裡的 bash 區塊不收：你在對話裡看不到它，收了只會把要你跑的擠掉', async ($, on) => {
+  bottom(on)
+  await reply($, fence('make gen'))
+  await reply($, [fence('cat a'), fence('cat b'), fence('cat c')].join('\n\n'), 'agent-explore')
+
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'AbovePrompt', props: PROPS })
+  expect(await shows(ui, /make gen/)).toBe(true)
+  expect(await shows(ui, /cat a/)).toBe(false)
+  await ui.unmount()
+})
