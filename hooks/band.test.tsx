@@ -34,7 +34,7 @@ const FAKE_GLPAT = 'glpat-' + 'EXAMPLEexample'.repeat(2) + '0000'
  * 測試底下什麼都沒有：帶子讓路時要有人答 ui.render、toast 要有人收、時鐘要會回答。
  * toast 的結果是 `{ value: undefined }`，不補的話每次 toast 都被丟掉並在報告留一行。
  */
-function bottom(on: On, said: string[] = []): void {
+function bottom(on: On, said: string[] = []): ReturnType<typeof mock.clock> {
   on('ui.render', ($, e) => {
     const { Box } = $.ui.resolve(e)
 
@@ -45,7 +45,45 @@ function bottom(on: On, said: string[] = []): void {
 
     return { value: undefined }
   })
-  mock.clock(on, { now: 1_700_000_000_000 })
+
+  return mock.clock(on, { now: 1_700_000_000_000 })
+}
+
+/** 最後一張卡跑完後等多久才送給 Claude（register.tsx 的 SETTLE_MS）。 */
+const SETTLE_MS = 3_000
+
+/** 送進 prompt.submit 的每一則：誰送的、字、附帶的 context。 */
+type Submitted = { text: string; origin: { kind: string; name?: string }; context?: readonly string[] }
+
+function submissions(on: On): Submitted[] {
+  const sent: Submitted[] = []
+  on('prompt.submit', ($, e) => {
+    sent.push({ text: e.text, origin: e.origin as Submitted['origin'], context: e.context })
+
+    return { text: e.text, ...(e.context === undefined ? {} : { context: e.context }) }
+  })
+
+  return sent
+}
+
+const fromBaton = (sent: Submitted[]) => sent.filter(s => s.origin.kind === 'plugin' && s.origin.name === 'baton')
+
+/** 假的子程序：每個指令吐一行；`slow` 那個要等 release() 才結束，其餘馬上以 0 結束。 */
+function gatedSpawn(on: On, slow: string): { release: () => void } {
+  let open = (): void => {}
+  const gate = new Promise<void>(resolve => {
+    open = resolve
+  })
+  on('process.spawn', async function* ($, e) {
+    yield { stream: 'stdout' as const, text: `ran ${e.argv[2] ?? ''}\n` }
+    if (e.argv[2] === slow) {
+      await gate
+    }
+
+    return { value: { code: 0, signal: null } }
+  })
+
+  return { release: () => open() }
 }
 
 /** 假的子程序：記下收到的 argv，吐出 output、以 code 結束。 */
@@ -115,14 +153,16 @@ test('桌面板畫卡片（頁首＋每筆一張圖），終端機一張圖都�
   await term.unmount()
 })
 
-test('按下去以你的身分跑 bash -lc，跑完卡片留結果，摘要在你下一則訊息帶給 Claude', async ($, on) => {
+test('按下去以你的身分跑 bash -lc，跑完卡片留結果；送出前你先打了訊息，摘要搭那則帶給 Claude、不另外送', async ($, on) => {
   const seen: string[][] = []
   const said: string[] = []
   const contexts: (readonly string[] | undefined)[] = []
-  bottom(on, said)
+  const clock = bottom(on, said)
   fakeSpawn(on, seen, 'To gitlab:acme/server.git\n   a41c0f2..9be3d10  feat-login -> feat-login\n', 0)
+  const sent: Submitted[] = []
   on('prompt.submit', ($, e) => {
     contexts.push(e.context)
+    sent.push({ text: e.text, origin: e.origin as Submitted['origin'], context: e.context })
 
     return { text: e.text, ...(e.context === undefined ? {} : { context: e.context }) }
   })
@@ -141,20 +181,101 @@ test('按下去以你的身分跑 bash -lc，跑完卡片留結果，摘要在�
   expect(seen[0]).toEqual(['bash', '-lc', 'git push origin feat-login'])
   expect(said.some(text => text.startsWith('✓ 完成'))).toBe(true)
 
-  // 頁首說有幾筆排著要帶給 Claude
+  // 頁首說有幾筆排著要送給 Claude
   const before = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'AbovePrompt', props: PROPS })
-  expect(await shows(before, /下則訊息帶給 Claude 2 筆/)).toBe(true)
+  expect(await shows(before, /稍後送給 Claude 2 筆/)).toBe(true)
   await before.unmount()
 
-  // 下一則訊息：兩次執行的摘要一起帶過去，帶完就清掉
+  // 還沒送出你就打了訊息：兩次執行的摘要一起搭那則帶過去，帶完就清掉
   await $.prompt.submit({ ...TYPED, text: '推好了嗎？' })
   const after = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'AbovePrompt', props: PROPS })
-  expect(await shows(after, /下則訊息帶給 Claude/)).toBe(false)
+  expect(await shows(after, /稍後送給 Claude/)).toBe(false)
   await after.unmount()
-  const sent = contexts.at(-1)?.join('\n') ?? ''
-  expect(sent).toContain('[指令帶子] 使用者按了執行：git push origin feat-login → exit 0')
+  const rode = contexts.at(-1)?.join('\n') ?? ''
+  expect(rode).toContain('[指令帶子] 使用者按了執行：git push origin feat-login → exit 0')
   await $.prompt.submit({ ...TYPED, text: '下一題' })
   expect(contexts.at(-1)).toBeUndefined()
+
+  // 時間到了也不另外送一則：已經帶過了
+  await clock.advance(SETTLE_MS * 2)
+  expect(fromBaton(sent)).toEqual([])
+})
+
+test('跑完等一下就直接送給 Claude，不用等你下一則訊息；連續按的幾張合成一則', async ($, on) => {
+  const seen: string[][] = []
+  const clock = bottom(on)
+  fakeSpawn(on, seen, 'ok\n', 0)
+  const sent = submissions(on)
+  await $.command.run({ ...RUN_CONTEXT, command: 'band', args: 'git push origin feat-login' })
+  await $.command.run({ ...RUN_CONTEXT, command: 'band', args: 'git push origin v0.4.0' })
+
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: PROPS })
+  const runs: { key?: string; props: { label?: unknown } }[] = (await ui.findAll({ type: 'Button' }))
+    .filter((el: { props: { label?: unknown } }) => RUN.test(String(el.props.label ?? '')))
+  expect(runs.length).toBe(2)
+  await ui.press({ key: String(runs[0]?.key) })
+  await clock.advance(SETTLE_MS - 1_000)
+  expect(fromBaton(sent)).toEqual([]) // 還在等：說不定你還要按下一張
+  await ui.press({ key: String(runs[1]?.key) }) // 等的時候按了第二張：從它跑完重新計時
+  await ui.unmount()
+  expect(seen.length).toBe(2)
+
+  await clock.advance(SETTLE_MS - 1)
+  expect(fromBaton(sent)).toEqual([]) // 第一張跑完已經超過 SETTLE_MS，但不先送它一張
+  await clock.advance(1)
+  const ours = fromBaton(sent)
+  expect(ours.length).toBe(1)
+  expect(ours[0]?.text).toContain('git push origin feat-login → exit 0')
+  expect(ours[0]?.text).toContain('git push origin v0.4.0 → exit 0')
+  expect(ours[0]?.context).toBeUndefined() // 自己送的那則不再附一次
+
+  // 送過就清掉：頁首不再說排著，你下一則訊息也不再帶
+  const band = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'AbovePrompt', props: PROPS })
+  expect(await shows(band, /稍後送給 Claude/)).toBe(false)
+  await band.unmount()
+  await $.prompt.submit({ ...TYPED, text: '好' })
+  expect(sent.at(-1)?.context).toBeUndefined()
+  await clock.advance(SETTLE_MS * 2)
+  expect(fromBaton(sent).length).toBe(1)
+})
+
+test('還有卡片在跑就不送：等它跑完、再過一段才一起送', async ($, on) => {
+  const clock = bottom(on)
+  const slow = gatedSpawn(on, 'make long-build')
+  const sent = submissions(on)
+  await $.command.run({ ...RUN_CONTEXT, command: 'band', args: 'make long-build' })
+  await $.command.run({ ...RUN_CONTEXT, command: 'band', args: 'make quick' })
+
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: PROPS })
+  const keyOf = async (name: string) => {
+    const all: { key?: string; props: { label?: unknown } }[] = await ui.findAll({ type: 'Button' })
+    const runs = all.filter(el => RUN.test(String(el.props.label ?? '')))
+    // 卡片照收進來的順序畫：第一顆是 make long-build、第二顆是 make quick
+    return String(runs[name === 'long' ? 0 : 1]?.key)
+  }
+  const long = await keyOf('long')
+  const quick = await keyOf('quick')
+  const pressingLong = ui.press({ key: long }) // 跑很久：不等它
+  const running = async () => {
+    const all: { props: { label?: unknown } }[] = await ui.findAll({ type: 'Button' })
+    return all.some(el => /停止|^■$/.test(String(el.props.label ?? '')))
+  }
+  // 每次查詢都是一趟引擎往返，夠讓按下去的那張開始跑（mod 的環境沒有 setTimeout）
+  for (let i = 0; i < 500 && !(await running()); i++);
+  expect(await running()).toBe(true)
+  await ui.press({ key: quick })
+
+  await clock.advance(SETTLE_MS * 2)
+  expect(fromBaton(sent)).toEqual([]) // make quick 早就跑完，但 make long-build 還在跑
+
+  slow.release()
+  await pressingLong
+  await clock.advance(SETTLE_MS)
+  const ours = fromBaton(sent)
+  expect(ours.length).toBe(1)
+  expect(ours[0]?.text).toContain('make quick → exit 0')
+  expect(ours[0]?.text).toContain('make long-build → exit 0')
+  await ui.unmount()
 })
 
 test('輸出裡的金鑰：卡片上看不到，帶給 Claude 的也看不到', async ($, on) => {

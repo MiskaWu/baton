@@ -392,7 +392,7 @@ export function commandCard(c: CardCommand, index: number, width: number): Drawi
 }
 
 /**
- * 頁首（一列高）：終端圖示＋「指令 N 筆」，右邊是排著要在你下一則訊息帶給 Claude 的筆數。
+ * 頁首（一列高）：終端圖示＋「指令 N 筆」，右邊是跑完、排著等一下送給 Claude 的筆數。
  * 狀態不在這裡重講——每張卡左欄的記號就是狀態（10-22「很擠」：頁首和卡片各講一次只是佔位）。
  * 視窗的 ↑↓ 與 ✕ 是旁邊的 Button。
  */
@@ -403,7 +403,7 @@ export function bandHeader(list: readonly CardCommand[], width: number, queued =
     `<path d="M3.8 6.4l2.8 2.8-2.8 2.8M8 12.4h4" fill="none" class="shS" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>` +
     txt(22, 14, 't1', 12.5, '指令', 'font-weight="700"') +
     txt(22 + textWidth('指令', 12.5) + 7, 14, 't3', 11.5, `${list.length} 筆`)
-  const note = queued > 0 ? `↗ 下則訊息帶給 Claude ${queued} 筆` : ''
+  const note = queued > 0 ? `↗ 稍後送給 Claude ${queued} 筆` : ''
   if (note !== '') {
     body += txt(width, 14, 't3', 11, note, 'text-anchor="end"')
   }

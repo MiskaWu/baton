@@ -61,7 +61,7 @@ export const view = atom(
   { first: null, anchor: null } as BandView,
 )
 
-/** 排著等你下一則訊息帶給 Claude 的執行摘要（已遮過金鑰）。 */
+/** 排著要送給 Claude 的執行摘要（已遮過金鑰）：跑完一起送（sendReports），你先打了訊息就搭那則帶過去。 */
 export const reports = atom(
   { plugin: 'baton', key: 'reports' } as const,
   [] as string[],
@@ -70,8 +70,17 @@ export const reports = atom(
 /** 執行中最後一行輸出最快多久更新一次卡片（ms）：聊天很多的指令不要每段都重畫。 */
 const PROGRESS_MS = 250
 
-/** 最多排幾筆摘要等著帶給 Claude；你很久沒說話時只帶最近的。 */
+/** 最多排幾筆摘要等著帶給 Claude；送不出去、排久了時只帶最近的。 */
 const MAX_REPORTS = 6
+
+/**
+ * 最後一張卡跑完後等多久才把結果送給 Claude（ms）。這段時間裡又按了別張，就等那張也跑完：
+ * 連續按的幾張合成一則，不要每張各叫 Claude 一輪。
+ */
+const SETTLE_MS = 3_000
+
+/** 排著的那一次送出；又有卡片跑完就取消重排（scheduleReports）。 */
+let sendTimer: { cancel: () => void } | null = null
 
 /**
  * 正在跑的子程序：按「■ 停止」時用它結束。只活在這個模組裡——
@@ -98,7 +107,9 @@ const GUIDE = [
   '- Use bash fences only for commands meant for the user to run; put illustrative snippets in other fences.',
   '- Only a block written out in your reply\'s own text becomes a card: write it before any tool call that ends',
   '  your turn. Saying a card is up (in a recap, a tool\'s input or anywhere else) puts none there.',
-  '- Each run\'s result comes back beside the user\'s next message, starting with [指令帶子], with secrets masked.',
+  '- Each run\'s result, starting with [指令帶子] and with secrets masked, is sent to you as a message from the',
+  '  baton plugin once the run ends (runs pressed in a row arrive together); when the user writes first, it rides',
+  '  along with their message instead. Either way the user pressed the card: carry on from the result.',
 ].join('\n')
 
 /** 結果的一句話，給 toast：狀態記號＋短指令。 */
@@ -124,7 +135,7 @@ function toastFor(command: BandCommand, outcome: RunOutcome): string {
  * 代價寫在設計稿：不經過 Claude 的規則與 hooks、git 的 repo hooks 不跑、沒有終端機可以輸入。
  *
  * 跑的時候再按一次是「■ 停止」。輸出一段一段回來，卡片顯示最後一行（遮過金鑰）；
- * 跑完把遮過的摘要排進 `reports`，你下一則訊息時帶給 Claude。原始輸出只存在這個函式裡。
+ * 跑完把遮過的摘要排進 `reports`，等一下送給 Claude（scheduleReports）。原始輸出只存在這個函式裡。
  */
 async function runCommand($: EngineInterface, id: string): Promise<void> {
   const command = (await read($, pending)).find(item => item.id === id)
@@ -184,6 +195,44 @@ async function runCommand($: EngineInterface, id: string): Promise<void> {
   await update($, pending, list => applyOutcome(list, id, outcome))
   await update($, reports, list => [...list, outcome.report.text].slice(-MAX_REPORTS))
   $.ui.toast(toastFor(command, outcome))
+  scheduleReports($)
+}
+
+/**
+ * 跑完一張：SETTLE_MS 後把排著的摘要送給 Claude。又有一張跑完就重新計時，所以連續按的會合成一則。
+ *
+ * 10-23 以前要等你下一則訊息才帶過去，你得多打一句「跑完了」它才知道；現在跑完就送，不用你轉述。
+ */
+function scheduleReports($: EngineInterface): void {
+  sendTimer?.cancel()
+  sendTimer = $.clock.after(SETTLE_MS, () => void sendReports($))
+}
+
+/**
+ * 把排著的摘要合成一則送給 Claude（`$.prompt.submit`：它這一輪還在跑時引擎等它結束才送，自成一輪）。
+ * 還有卡片在跑就不送：那張跑完會再排一次，到時一起送。你在這之前打了訊息的話，摘要已經搭那則帶過去了，排空就不送。
+ * 先清空再送，送出的這則經過我們自己的 prompt.submit hook 時就不會再附一次；送不出去就放回去，等你下一則訊息帶。
+ */
+async function sendReports($: EngineInterface): Promise<void> {
+  sendTimer = null
+  if (children.size > 0) {
+    return
+  }
+
+  const queued = await read($, reports)
+
+  if (queued.length === 0) {
+    return
+  }
+
+  await update($, reports, () => [])
+
+  try {
+    await $.prompt.submit({ text: queued.join('\n\n') })
+  } catch (error) {
+    await update($, reports, list => [...queued, ...list].slice(-MAX_REPORTS))
+    $.ui.toast(`指令帶子：結果沒送出去，會在你下一則訊息帶給 Claude（${String(error)}）`)
+  }
 }
 
 /**
@@ -228,10 +277,12 @@ export const register: Register = on => {
     }
   })
 
-  // 把排著的執行摘要帶給 Claude：附在你下一則訊息旁邊（你在畫面上看不到這段），帶完清掉。
-  // 斜線指令不帶——它不一定會進到模型，帶了就丟了。
+  // 結果還沒送出（sendReports 在等最後一張跑完）你就先打了訊息：附在你那則旁邊帶過去（畫面上看不到這段），帶完清掉，
+  // 到時 sendReports 看到排空就不另送一則。斜線指令不帶——它不一定會進到模型，帶了就丟了。
+  // 我們自己送的那則也不帶：送之前已經清空，這裡只是不讓清空之後才跑完的那筆搭錯車（它會自己再排一次）。
   on('prompt.submit', async ($, e, next) => {
-    const queued = e.command === undefined ? await read($, reports) : []
+    const ours = e.origin.kind === 'plugin' && e.origin.name === 'baton'
+    const queued = e.command === undefined && !ours ? await read($, reports) : []
 
     if (queued.length === 0) {
       return next(e)

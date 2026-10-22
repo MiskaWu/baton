@@ -34,7 +34,7 @@ declare module 'claude-code' {
     'baton': {
       pending: BandCommand[]
       view: BandView
-      /** 排著等你下一則訊息帶給 Claude 的執行摘要（已遮過金鑰）。 */
+      /** 排著要送給 Claude 的執行摘要（已遮過金鑰）：跑完一起送，你先打了訊息就搭那則帶過去。 */
       reports: string[]
     }
   }
