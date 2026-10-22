@@ -1,0 +1,36 @@
+{
+  "name": "baton",
+  "owner": {
+    "name": "MiskaWu",
+    "url": "https://github.com/MiskaWu"
+  },
+  "metadata": {
+    "description": "Claude 跑不了的指令交到你手上，你按一下跑完，結果再交回去。",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "baton",
+      "source": "./",
+      "description": "把 Claude 交給你跑的 shell 指令收成輸入框上方的卡片，寫明為什麼要你跑；你看過按一下就以你的身分執行，結果遮掉金鑰後在下一則訊息帶回給 Claude。",
+      "version": "0.1.0",
+      "author": {
+        "name": "MiskaWu",
+        "url": "https://github.com/MiskaWu"
+      },
+      "homepage": "https://github.com/MiskaWu/baton",
+      "repository": "https://github.com/MiskaWu/baton",
+      "license": "MIT",
+      "keywords": [
+        "shell",
+        "command",
+        "run",
+        "band",
+        "desktop",
+        "secrets",
+        "mod"
+      ],
+      "category": "productivity"
+    }
+  ]
+}

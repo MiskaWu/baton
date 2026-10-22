@@ -1,0 +1,22 @@
+{
+  "name": "baton",
+  "version": "0.1.0",
+  "description": "把 Claude 交給你跑的 shell 指令收成輸入框上方的卡片，寫明為什麼要你跑；你看過按一下就以你的身分執行，結果遮掉金鑰後在下一則訊息帶回給 Claude。",
+  "author": {
+    "name": "MiskaWu",
+    "url": "https://github.com/MiskaWu"
+  },
+  "homepage": "https://github.com/MiskaWu/baton",
+  "repository": "https://github.com/MiskaWu/baton",
+  "license": "MIT",
+  "keywords": [
+    "shell",
+    "command",
+    "run",
+    "band",
+    "desktop",
+    "secrets",
+    "mod"
+  ],
+  "types": "./types/index.d.ts"
+}
