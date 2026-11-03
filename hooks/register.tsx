@@ -97,6 +97,11 @@ let drawn: { requestId: string; first: number; maxFirst: number } | null = null
  *
  * 「只有寫進回覆裡的區塊才會變卡片」那條來自 10-22：Claude 在回合結束框的 recap 裡說「兩張卡片已經放上去了」，
  * 回覆裡卻一個 bash 區塊都沒寫，使用者看到的只有上一輪的舊卡——它說的和真的發生的分岔了。
+ *
+ * 「卡片就是那一步」那條來自 11-03：交卡片的那幾輪，Claude 幾乎每次都在桌面 app 的下一步框另外問「卡片按完了嗎？」
+ * 配一顆「推好了」，或問「要我直接跑嗎？」。同一步有兩個入口：按鈕只是說做了，卡片才是真的做了，而結果本來就會自己送回來。
+ * 使用者得先應付那個框，或回一句「用卡片給我推」多繞一輪。下一步框不會把帶子藏起來（桌面版只在計畫核准、組織存取被擋時拿掉它），
+ * 擋路的是 Claude 自己多問的那一句，所以規則寫給 Claude。
  */
 const GUIDE = [
   'Shell commands you hand the user to run (a ```bash fenced block) become cards above the prompt,',
@@ -106,10 +111,15 @@ const GUIDE = [
   '- Keep each block one self-contained command the user can read in full; blocks over 7 lines get no run button.',
   '- Use bash fences only for commands meant for the user to run; put illustrative snippets in other fences.',
   '- Only a block written out in your reply\'s own text becomes a card: write it before any tool call that ends',
-  '  your turn. Saying a card is up (in a recap, a tool\'s input or anywhere else) puts none there.',
+  '  your turn (a wrap-up call that closing text follows does not end it). Saying a card is up (in a recap, a',
+  '  tool\'s input or anywhere else) puts none there.',
   '- Each run\'s result, starting with [指令帶子] and with secrets masked, is sent to you as a message from the',
   '  baton plugin once the run ends (runs pressed in a row arrive together); when the user writes first, it rides',
   '  along with their message instead. Either way the user pressed the card: carry on from the result.',
+  '- A card is the step you leave the user, and its result is how you learn it ran. Do not also ask about it, as a',
+  '  question or as reply buttons ("ran it?", "done", "pushed", "run it for me"): when the host shows a next-step',
+  '  box, give it the recap alone, or a separate decision the cards leave open. A command you could run yourself',
+  '  once the user agrees is not a card: ask, then run it.',
 ].join('\n')
 
 /** 結果的一句話，給 toast：狀態記號＋短指令。 */
