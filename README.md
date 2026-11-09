@@ -3,13 +3,44 @@
 Claude 跑不了的指令交到你手上，你看過、按一下就跑；跑完的結果遮掉金鑰，再交回給 Claude。一來一回，像接力棒。
 
 Claude Code 對話裡，Claude 常會給你一段 bash 要你自己跑：它的權限規則擋住了、要用你的帳號、要你的 sudo。
-baton 把這些指令收成輸入框上方的卡片：
+沒有 baton 時，你得複製到終端機、跑完再把結果貼回來；baton 把這一段收進輸入框上方的卡片裡。
 
-- 每張卡寫著**為什麼要你跑**（Claude 寫在指令第一行的 `# 原因：…`）。
-- 按 ▶（或數字鍵 1–9）就**以你的身分執行**，等於你在終端機打這一行；執行中按 ■ 停止。
-- 跑完的輸出（頭 1 行＋尾 2 行）留在卡片上，並**直接送回給 Claude**，讓它接著做，不用你再打一句「跑完了」。
-  連續按好幾張的話，等最後一張跑完幾秒再合成一則送。
-- 帶回去之前**先遮金鑰**；會把金鑰印出來的指令（`env`、`cat .env`、`gh auth token`…）只帶 exit code。
+## 用起來長這樣
+
+1. **Claude 把指令寫進回覆。** 回覆裡的 bash 區塊會變成輸入框上方的卡片，卡片上寫著**為什麼要你跑**（Claude 寫在指令第一行的 `# 原因：…`）。
+2. **你看過，按一下。** 按 ▶（或卡片上的數字鍵）就**以你的身分執行**，等於你在終端機打這一行；執行中按 ■ 停止。
+3. **結果自己回到 Claude。** 跑完的輸出（頭 1 行＋尾 2 行）留在卡片上，遮掉金鑰後**直接送回給 Claude**，讓它接著做，不用你再打一句「跑完了」。
+   連續按好幾張的話，等最後一張跑完幾秒再合成一則送。
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/band-dark.webp">
+  <img src="docs/images/band-light.webp" width="680" alt="輸入框上方的指令帶子，三張卡片：deploy.sh 已完成，輸出裡的 API_TOKEN 已被遮掉；npm run migrate 執行中，顯示最後一行輸出；git push origin main 還沒按，寫著原因是你的規則不讓 Claude 推 main。每張卡右側有執行與複製按鈕">
+</picture>
+
+上圖第一張卡跑完後，送回給 Claude 的就是這幾行：
+
+```text
+[指令帶子] 使用者按了執行：./scripts/deploy.sh staging → exit 0（輸出 5 行，只帶頭 1 行和尾 2 行，遮掉 1 處金鑰）
+  使用 API_TOKEN=‹遮掉：敏感設定值› 登入 staging.example.com
+  ⋯ 略過 2 行
+  健康檢查通過
+  已部署 v1.4.2 到 staging
+```
+
+不該從這裡跑的指令，卡片會直接說：
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/band-guard-dark.webp">
+  <img src="docs/images/band-guard-light.webp" width="680" alt="三張卡片：cat .env.staging 已完成，但輸出 5 行沒有顯示，因為這類指令常印出金鑰；sudo systemctl restart nginx 標成要用終端機，只留複製按鈕；一段九行的 heredoc 只顯示前六行，寫著太長不能從這裡跑，只留複製按鈕">
+</picture>
+
+- `env`、`cat .env`、`gh auth token` 這類常把金鑰印出來的指令：輸出不顯示也不送回，只帶 exit code。
+- 要輸入密碼或確認的指令：這裡沒有地方打字，卡片標成「要用終端機」，只留複製。
+- 超過 7 行、卡片放不完的指令：看不完就不給按，只留複製。
+
+<sub>卡片由 baton 自己的繪圖程式（<code>hooks/visual.ts</code>）畫出，輸出摘要與遮蔽結果是用 baton 的程式實際算的。指令、主機與 token 都是示例；按鈕和輸入框照版面排，是示意。</sub>
+
+**按下去就是你本人在跑**，不經過 Claude 的權限規則和 hooks，所以按之前請看清楚。其他注意事項見[安全須知](#安全須知)。
 
 ## 安裝
 
@@ -30,6 +61,8 @@ claude plugin marketplace add MiskaWu/baton && claude plugin install baton@baton
 **C. 桌面 app**（`/plugin` 在桌面 app 不能用）：按輸入框旁的 **+** → **Plugins** → **Add marketplace**，填 `MiskaWu/baton`，再 **Add plugin**。
 
 裝好後輸入 `/reload-plugins`（或開一個新對話）就生效。
+
+想先試一下：輸入 `/band echo 你好`，輸入框上方會多一張卡片。這張是你自己放的，所以原因那行會寫「Claude 沒寫為什麼要你跑」。按 ▶ 跑完，結果會送給 Claude，它會接著回你一則。
 
 ### 更新
 
@@ -52,10 +85,10 @@ claude plugin marketplace update baton && claude plugin update baton@baton
 
 ## 用法
 
-- Claude 回覆裡的 ` ```bash `／` ```sh ` 區塊會自動變成卡片，最多留最近 3 張。只收主對話的回覆，子代理的不收。
+- Claude 回覆裡的 ` ```bash `／` ```sh `（`shell`、`zsh` 也算）區塊會自動變成卡片，最多留最近 3 張。只收主對話的回覆，子代理的不收。
 - 卡片底下那一列：沒跑之前是**原因**，跑的時候是最後一行輸出，跑完是結果（完成、exit N、已停止、要用終端機）。
 - 按鈕：▶ 執行、■ 停止、↻ 再跑一次；⧉ 複製指令（不含原因那一行）。
-- 數字鍵：點一下帶子讓它取得焦點，按 1–9 執行對應的那張。
+- 數字鍵：點一下帶子讓它取得焦點，按卡片上的數字執行對應的那張（最多留 3 張，所以是 1–3）。
 - 放不下時：頁首的「↑ 上面 N 筆／↓ 下面 N 筆」、卡片下方的預覽列，或在帶子上用滾輪換張。
 - `/band <指令>` 手動放一筆進去；`/band clear` 或 ✕ 清空。
 - 桌面 app 畫成卡片；終端機用文字，按鈕一樣。
