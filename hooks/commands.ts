@@ -2,12 +2,16 @@ import type { BandCommand } from '../types'
 import { EXIT_ONLY, excerpt, oneLine, printsSecrets, redact, reportFor } from './redact'
 
 /**
- * 帶子上最多留幾筆；再多就把最舊的擠掉。
+ * 帶子上最多留幾筆；再多就照 STATUS 的 evict 擠掉舊的（跑完的先走，沒跑過的最後才走）。
  *
- * 桌面板一次只放得下 12 列（頁首 1 列＋整張的卡），放不下的用頁首的 ↑↓ 換張；
- * 三筆是「最近這一輪要你跑的」夠用、又不會一直要你捲的數量。
+ * 桌面板一次只放得下 12 列（頁首 1 列＋整張的卡），放不下的用頁首的 ↑↓ 換張。
+ * 9 ＝執行鈕的數字鍵 1–9。
+ *
+ * ⟳ 11-11：原本是 3 筆、最舊的先丟。Claude 一則回覆給了 4 個指令，第 4 個把同一則的第 1 個擠掉，
+ * 那張卡你根本沒看到、也點不到。所以兩件事一起改：上限放寬，而且**同一則新進來的、正在跑的一律不丟**
+ * ——上限是用來清舊的，不能拿來砍 Claude 剛交給你的。不要的那張按卡片上的 ✕ 拿掉（removeCommand）。
  */
-export const MAX_KEPT = 3
+export const MAX_KEPT = 9
 
 // 只收 shell 圍欄。Claude 的慣例是「要使用者執行的指令」才標成 shell 區塊，
 // 所以語言標籤本身就是篩選條件——不標 shell 的程式碼區塊不會被收進來。
@@ -36,7 +40,7 @@ export function parseCommands(text: string): { command: string; reason?: string 
  * 把新抓到的指令併進待執行清單。
  *
  * 同樣的指令不重複收（同一則訊息裡重複、或我覆述上一則的指令都算）；
- * 重複的那筆如果這次寫了原因而舊的沒有，補上。清單只留最後 MAX_KEPT 筆。
+ * 重複的那筆如果這次寫了原因而舊的沒有，補上。超過 MAX_KEPT 筆時由 trimOld 清舊的。
  */
 export function mergeCommands(
   pending: readonly BandCommand[],
@@ -44,18 +48,58 @@ export function mergeCommands(
   idFor: (index: number) => string,
 ): BandCommand[] {
   const merged = [...pending]
+  // 這一則提到的（新收的，或覆述舊的）：清舊的時候不能動它們
+  const mentioned = new Set<string>()
   found.forEach((item, index) => {
     const at = merged.findIndex(old => old.command === item.command)
     if (at >= 0) {
       const old = merged[at]
-      if (old !== undefined && old.reason === undefined && item.reason !== undefined) {
-        merged[at] = { ...old, reason: item.reason }
+      if (old !== undefined) {
+        mentioned.add(old.id)
+        if (old.reason === undefined && item.reason !== undefined) {
+          merged[at] = { ...old, reason: item.reason }
+        }
       }
       return
     }
-    merged.push({ id: idFor(index), ...item })
+    const id = idFor(index)
+    mentioned.add(id)
+    merged.push({ id, ...item })
   })
-  return merged.slice(-MAX_KEPT)
+  return trimOld(merged, mentioned)
+}
+
+/**
+ * 超過 MAX_KEPT 筆時一筆一筆拿掉：照 STATUS 的 evict 由小到大、同一級先拿最舊的。
+ * `keep` 裡的（這一則剛提到的）與 evict 為 null 的（正在跑）不拿；只剩這些時寧可超過上限。
+ */
+export function trimOld(list: readonly BandCommand[], keep: ReadonlySet<string>): BandCommand[] {
+  const out = [...list]
+  while (out.length > MAX_KEPT) {
+    let victim = -1
+    let rank = Infinity
+    out.forEach((item, index) => {
+      const evict = STATUS[statusOf(item)].evict
+      if (keep.has(item.id) || evict === null || evict >= rank) {
+        return
+      }
+      victim = index
+      rank = evict
+    })
+    if (victim < 0) {
+      break
+    }
+    out.splice(victim, 1)
+  }
+  return out
+}
+
+/**
+ * 按卡片上的 ✕：拿掉這一張。
+ * 正在跑的不拿（先按 ■ 停止）：子程序還在跑，結果回來時要有一張卡可以寫。
+ */
+export function removeCommand(pending: readonly BandCommand[], id: string): BandCommand[] {
+  return pending.filter(item => item.id !== id || !removable(item))
 }
 
 /** 只留「這筆是什麼、為什麼要你跑」，上一次的結果全部清掉。 */
@@ -219,17 +263,31 @@ export function statusOf(command: BandCommand): Status {
  * - color：終端機的狀態色；可按的不上色。
  * - mark：預覽列上的一個字，和卡片左欄的記號同一套。
  * - runnable：給不給執行鈕（要你輸入的按了也沒用，只留複製）。
+ * - evict：清單滿了先清誰（trimOld）：數字小的先走；null 不清。跑完的先走，沒跑過的最後才走，正在跑的不動。
+ * - removable：卡片上給不給 ✕（removeCommand）；正在跑的要先停止。
  */
 export const STATUS: Record<
   Status,
-  { icon: string; terminal: string; color?: 'success' | 'error' | 'warning'; mark: string; runnable: boolean }
+  {
+    icon: string
+    terminal: string
+    color?: 'success' | 'error' | 'warning'
+    mark: string
+    runnable: boolean
+    evict: number | null
+    removable: boolean
+  }
 > = {
-  idle: { icon: '▶', terminal: '▶ 執行', mark: '$', runnable: true },
-  running: { icon: '■', terminal: '■ 停止', color: 'warning', mark: '…', runnable: true },
-  done: { icon: '↻', terminal: '✓ 再執行', color: 'success', mark: '✓', runnable: true },
-  failed: { icon: '↻', terminal: '✗ 重試', color: 'error', mark: '✗', runnable: true },
-  stopped: { icon: '↻', terminal: '■ 再執行', color: 'warning', mark: '■', runnable: true },
-  terminal: { icon: '↻', terminal: '✗ 重試', color: 'error', mark: '✗', runnable: false },
+  idle: { icon: '▶', terminal: '▶ 執行', mark: '$', runnable: true, evict: 2, removable: true },
+  running: { icon: '■', terminal: '■ 停止', color: 'warning', mark: '…', runnable: true, evict: null, removable: false },
+  done: { icon: '↻', terminal: '✓ 再執行', color: 'success', mark: '✓', runnable: true, evict: 0, removable: true },
+  failed: { icon: '↻', terminal: '✗ 重試', color: 'error', mark: '✗', runnable: true, evict: 1, removable: true },
+  stopped: { icon: '↻', terminal: '■ 再執行', color: 'warning', mark: '■', runnable: true, evict: 1, removable: true },
+  terminal: { icon: '↻', terminal: '✗ 重試', color: 'error', mark: '✗', runnable: false, evict: 1, removable: true },
+}
+
+export function removable(command: BandCommand): boolean {
+  return STATUS[statusOf(command)].removable
 }
 
 export function actionIcon(command: BandCommand): string {

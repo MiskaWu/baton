@@ -557,9 +557,11 @@ for (const [where, plugins] of [
     expect(await shows(ui, /第 1 筆指令/)).toBe(true)
     await reply($, `好了，再跑這個：\n\n${fence('git push origin main', '從 worktree 推會被擋')}`)
 
-    // 只留最後三筆：最舊的被擠掉，新的那張在第 3 筆、而且在視窗裡
-    expect(await shows(ui, /第 3 筆指令：git push origin main/)).toBe(true)
-    expect(await shows(ui, /done 1/)).toBe(false)
+    // 新的那張排在第 4 筆、而且在視窗裡（你剛才捲到的第 1 張被換出去）。
+    // ⟳ 11-11 以前上限 3、最舊的先丟，這裡斷言的是「第 3 筆、done 1 消失」；現在沒滿就不丟，舊的還在上面。
+    expect(await shows(ui, /第 4 筆指令：git push origin main/)).toBe(true)
+    expect(await shows(ui, /第 1 筆指令/)).toBe(false)
+    expect(await button(ui, /上面/)).toBeDefined()
     await ui.unmount()
   })
 }
@@ -607,5 +609,79 @@ test('子代理回覆裡的 bash 區塊不收：你在對話裡看不到它，�
   const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'AbovePrompt', props: PROPS })
   expect(await shows(ui, /make gen/)).toBe(true)
   expect(await shows(ui, /cat a/)).toBe(false)
+  await ui.unmount()
+})
+
+// ── 一則給好幾個指令、不要的那張拿掉（11-11）────────────────────────────────
+
+/** 卡片上的 ✕（只拿掉一張）：label 是 ✕ 開頭、key 不是頁首那顆 dismiss。 */
+async function removeButtons(ui: { findAll: Function }): Promise<{ key?: string }[]> {
+  const all: { key?: string; props: { label?: unknown } }[] = await ui.findAll({ type: 'Button' })
+
+  return all.filter(el => el.key !== 'dismiss' && /^✕/.test(String(el.props.label ?? '')))
+}
+
+// 11-11 的 bug：一則回覆給了 4 個指令，上限 3、最舊的先丟，第 1 張根本沒上帶子。
+test('Claude 一則給 4 個指令：4 張都在，第 1 張也點得到', async ($, on) => {
+  bottom(on)
+  const four = ['git merge --ff-only work', 'git push origin main', 'make edge', 'make edge-status']
+  await reply($, four.map(command => fence(command)).join('\n\n'))
+
+  const term = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: PROPS })
+  for (const command of four) {
+    expect(await term.find({ type: 'Text', text: command })).toBeDefined()
+  }
+  expect((await removeButtons(term)).length).toBe(4)
+  await term.unmount()
+
+  // 桌面板放不下時第 1 張不在視窗裡，但頁首說上面還有、預覽列按得到
+  const desk = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'AbovePrompt', props: PROPS })
+  const firstShown = (await shows(desk, /第 1 筆指令：git merge/)) || (await button(desk, /第 1 筆/)) !== undefined
+  expect(firstShown).toBe(true)
+  await desk.unmount()
+})
+
+test('卡片上的 ✕ 只拿掉那一張，其他的和整條帶子都還在', async ($, on) => {
+  bottom(on)
+
+  for (const surface of SURFACES) {
+    await $.command.run({ ...RUN_CONTEXT, command: 'band', args: 'clear' })
+    await $.command.run({ ...RUN_CONTEXT, command: 'band', args: 'echo keep' })
+    await $.command.run({ ...RUN_CONTEXT, command: 'band', args: 'echo drop' })
+
+    const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'AbovePrompt', props: PROPS })
+    const removes = await removeButtons(ui)
+    expect(removes.length).toBe(2)
+    // 卡片照收進來的順序畫：第二顆是 echo drop
+    await ui.press({ key: String(removes[1]?.key) })
+
+    expect(await shows(ui, /echo drop/)).toBe(false)
+    expect(await shows(ui, /echo keep/)).toBe(true)
+    expect(await ui.find({ key: 'dismiss' })).toBeDefined()
+    expect((await removeButtons(ui)).length).toBe(1)
+
+    // 最後一張也拿掉：整條帶子讓路
+    await ui.press({ key: String((await removeButtons(ui))[0]?.key) })
+    expect(await ui.find({ key: 'dismiss' })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+test('正在跑的卡沒有 ✕：要先停止', async ($, on) => {
+  bottom(on)
+  const slow = gatedSpawn(on, 'make long-build')
+  await $.command.run({ ...RUN_CONTEXT, command: 'band', args: 'make long-build' })
+
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'AbovePrompt', props: PROPS })
+  expect((await removeButtons(ui)).length).toBe(1)
+  const pressing = ui.press({ key: String((await button(ui, RUN))?.key) })
+  const running = async () => (await button(ui, /停止|^■$/)) !== undefined
+  for (let i = 0; i < 500 && !(await running()); i++);
+  expect(await running()).toBe(true)
+  expect((await removeButtons(ui)).length).toBe(0)
+
+  slow.release()
+  await pressing
+  expect((await removeButtons(ui)).length).toBe(1)
   await ui.unmount()
 })

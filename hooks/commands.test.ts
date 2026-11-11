@@ -1,5 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
+import type { BandCommand } from '../types'
 import {
   MAX_KEPT,
   actionLabel,
@@ -12,6 +13,7 @@ import {
   outcomeOfRun,
   parseCommands,
   recoverAfterReload,
+  removeCommand,
   setProgress,
   statusColor,
 } from './commands'
@@ -70,17 +72,62 @@ test('一般註解不算原因；只有原因、沒有指令的區塊不收', ()
   expect(parseCommands(text)).toEqual([{ command: '# 先清快取\nmake clean' }])
 })
 
-test('同樣的指令不重複收，清單只留最後幾筆；重複時補上原因', () => {
+test('同樣的指令不重複收；重複時補上原因', () => {
   const first = mergeCommands([], [{ command: 'a' }, { command: 'b' }], index => `t1-${index}`)
   expect(first.map(item => item.command)).toEqual(['a', 'b'])
 
   const again = mergeCommands(first, [{ command: 'b', reason: '要你的權限' }], index => `t2-${index}`)
   expect(again.map(item => item.id)).toEqual(['t1-0', 't1-1'])
   expect(again[1]?.reason).toBe('要你的權限')
+})
 
-  const many = mergeCommands(again, [{ command: 'c' }, { command: 'd' }, { command: 'e' }], index => `t3-${index}`)
-  expect(many).toHaveLength(MAX_KEPT)
-  expect(many.map(item => item.command)).toEqual(['c', 'd', 'e'])
+// 11-11 的 bug：上限 3、最舊的先丟，Claude 一則給 4 個指令時第 1 個被第 4 個擠掉，使用者點不到。
+test('同一則給的指令一個都不丟，就算比上限還多', () => {
+  const four = ['merge', 'push', 'edge', 'edge-status'].map(command => ({ command }))
+  expect(mergeCommands([], four, i => `t-${i}`).map(item => item.command)).toEqual(['merge', 'push', 'edge', 'edge-status'])
+
+  const flood = Array.from({ length: MAX_KEPT + 2 }, (_, i) => ({ command: `c${i}` }))
+  expect(mergeCommands([], flood, i => `t-${i}`)).toHaveLength(MAX_KEPT + 2)
+})
+
+test('滿了才清舊的：先清跑完的，再清跑過沒成的，沒跑過的最後；正在跑的不清', () => {
+  const old: BandCommand[] = Array.from({ length: MAX_KEPT }, (_, i) => ({ id: `o${i}`, command: `old${i}` }))
+  // o0 沒跑過（最舊）、o1 失敗、o2 正在跑、o3 跑完
+  old[1] = { ...old[1]!, status: 'failed' as const, exitCode: 1 }
+  old[2] = { ...old[2]!, status: 'running' as const }
+  old[3] = { ...old[3]!, status: 'done' as const, exitCode: 0 }
+
+  const one = mergeCommands(old, [{ command: 'new0' }], () => 'n0')
+  expect(one).toHaveLength(MAX_KEPT)
+  expect(one.map(item => item.id)).not.toContain('o3') // 跑完的先走
+  expect(one.map(item => item.id)).toContain('o0') // 最舊但沒跑過，留著
+
+  const two = mergeCommands(one, [{ command: 'new1' }], () => 'n1')
+  expect(two.map(item => item.id)).not.toContain('o1') // 再來是跑過沒成的
+
+  const three = mergeCommands(two, [{ command: 'new2' }], () => 'n2')
+  expect(three.map(item => item.id)).not.toContain('o0') // 都沒有了才輪到沒跑過的，最舊的先
+  expect(three.map(item => item.id)).toContain('o2') // 正在跑的一直都在
+  expect(three.map(item => item.command).slice(-3)).toEqual(['new0', 'new1', 'new2'])
+})
+
+test('覆述舊的指令也算「這一則提到的」：清舊的時候不會被清掉', () => {
+  const full = Array.from({ length: MAX_KEPT }, (_, i) => ({ id: `o${i}`, command: `old${i}` }))
+  const merged = mergeCommands(full, [{ command: 'old0' }, { command: 'fresh' }], () => 'f')
+  expect(merged.map(item => item.id)).toContain('o0')
+  expect(merged.map(item => item.id)).not.toContain('o1')
+})
+
+test('卡片上的 ✕ 只拿掉那一張；正在跑的不拿', () => {
+  const list = [
+    { id: 'a', command: 'a' },
+    { id: 'b', command: 'b', status: 'running' as const },
+    { id: 'c', command: 'c', status: 'done' as const },
+  ]
+  expect(removeCommand(list, 'a').map(item => item.id)).toEqual(['b', 'c'])
+  expect(removeCommand(list, 'c').map(item => item.id)).toEqual(['a', 'b'])
+  expect(removeCommand(list, 'b').map(item => item.id)).toEqual(['a', 'b', 'c'])
+  expect(removeCommand(list, 'nope')).toEqual(list)
 })
 
 test('按下去清掉上次結果、執行中才收進度；按鈕與顏色就是狀態', () => {

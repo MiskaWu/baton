@@ -171,7 +171,7 @@ function pill(x: number, cy: number, tone: string, s: string, anchor: 'start' | 
 //
 // 卡片至少 3 列：
 //   第 1 列：狀態記號＋指令第一行。
-//   第 2 列：右邊疊著「執行」「複製」兩顆 Button（register.tsx 用 position absolute、top={TOOLBAR_ROW}）。
+//   第 2 列：右邊疊著「執行」「複製」「移除」三顆 Button（register.tsx 用 position absolute、top={TOOLBAR_ROW}）。
 //   之後：底下那列「原因／執行中／結果」（不畫虛線，靠留白和膠囊分段）。
 // 按鈕不放第 1 列：桌面板的按鈕約 20px，比一列高，放第 1 列上緣會壓到框線、下緣貼著虛線，
 // 頁首的按鈕也會貼著框（10-22 截圖「很擠」）。放第 2 列，上下都碰不到框。
@@ -200,14 +200,16 @@ const PAD_R = 12
 /** 第一行的基線：框上緣往下留 5px 以上再放字（10-22 真畫面：15.5 時字貼著框線）。 */
 const FIRST_BASELINE = 21
 
-/** 兩顆按鈕疊在卡片的第幾列（從 0 數）。 */
+/** 按鈕疊在卡片的第幾列（從 0 數）。 */
 export const TOOLBAR_ROW = 1
 
 /**
- * 右邊按鈕區的寬度（欄）：兩顆只畫圖示的按鈕「▶ 1」「⧉」橫排＋間距，再加右邊 1 欄內距。
+ * 右邊按鈕區的寬度（欄）：三顆只畫圖示的按鈕「▶ 1」「⧉」「✕」橫排＋間距，再加右邊 1 欄內距。
  * 第 2 列的內容（指令第二行，或一行指令時底下那列的第一行）要讓出這塊。
+ * ⟳ 11-11 加「✕ 移除」：原本兩顆是 11 欄，一顆圖示按鈕約 3 欄＋1 欄間距，所以多 4 欄。
+ * 執行中的卡沒有 ✕（要先停止），按鈕少一顆，留白照最多那種算。
  */
-export const TOOLBAR_COLS = 11
+export const TOOLBAR_COLS = 15
 const TOOLBAR_PX = TOOLBAR_COLS * COL
 
 /**

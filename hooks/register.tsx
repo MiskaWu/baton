@@ -20,6 +20,8 @@ import {
   outcomeOfRun,
   parseCommands,
   recoverAfterReload,
+  removable,
+  removeCommand,
   setProgress,
   shorten,
   startFailure,
@@ -266,6 +268,16 @@ async function clearBand($: EngineInterface): Promise<void> {
   await update($, view, () => ({ first: null, anchor: null }))
 }
 
+/**
+ * 卡片上的 ✕：只拿掉這一張（你不打算跑的）。頁首的 ✕ 才是整條清空。
+ * 正在跑的卡沒有這顆鈕（removeCommand 也不拿它）。視窗正指著這張的話，改回「以最新那張為準」；
+ * 你捲過的位置（first）照留，畫的時候會自己夾回範圍內。
+ */
+async function removeOne($: EngineInterface, id: string): Promise<void> {
+  await update($, pending, list => removeCommand(list, id))
+  await update($, view, at => (at.anchor === id ? { first: at.first, anchor: null } : at))
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -461,6 +473,9 @@ export const register: Register = on => {
                     label="⧉ 複製"
                     onPress={press => copyCommand($, command, press.surface)}
                   />
+                  {removable(command) ? (
+                    <Button key={`remove-${command.id}`} label="✕ 移除" onPress={() => removeOne($, command.id)} />
+                  ) : null}
                   {command.report === undefined ? null : <Text dimColor>{`↗ ${command.report}`}</Text>}
                 </Box>
 
@@ -561,6 +576,10 @@ export const register: Register = on => {
                   />
                 ) : null}
                 <Button key={`copy-${command.id}`} label="⧉" onPress={press => copyCommand($, command, press.surface)} />
+                {/* 只拿掉這一張；頁首的 ✕ 是整條清空。執行中沒有這顆（先停止）。 */}
+                {removable(command) ? (
+                  <Button key={`remove-${command.id}`} label="✕" onPress={() => removeOne($, command.id)} />
+                ) : null}
               </Box>
             </Box>
           )
